@@ -3,7 +3,7 @@ use std::io;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::fs::File;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::mpsc::{ channel, Sender, Receiver };
 use std::thread;
 
@@ -45,52 +45,52 @@ trait Lex<E: std::error::Error> {
 }
 
 // State Machine
-struct Lexer<R: io::Read> {
+struct Lexer<R: io::Read+Send> {
     pos: Pos,
     buf: Arc<Mutex<io::Chars<R>>>,
     state: StateFn<io::CharsError>,
-    send: Sender<Token>,
-    recv: Arc<Mutex<Receiver<Token>>>
+    send: Option<Sender<Token>>
 }
 
 fn startState<E: std::error::Error>(l: &Lex<E>)->Option<StateFn<E>> {
-    None
+    unimplemented!()
 }
 
-impl<R: io::Read> Lexer<R> {
+impl<R: io::Read+Send> Lexer<R> {
     fn new(reader: R)->Lexer<R> {
-        let (tx, rx) = channel();
         Lexer {
             pos: Pos::new(),
             buf: Arc::new(Mutex::new(reader.chars())),
             state: StateFn {
                 f: startState
             },
-            send: tx,
-            recv: Arc::new(Mutex::new(rx))
+            send: None
         }
     }
 
-    fn lex(&self) {
-        thread::spawn(move || {
+    fn lex(&'static mut self)->(thread::JoinHandle<()>, Receiver<Token>) {
+        let (tx, rx) = channel();
+        self.send = Some(tx);
+        (thread::spawn(move || {
             loop {
                 match (self.state.f)(self) {
                     Some(s) => { self.state = s; }
                     None => { return }
                 }
             }
-        });
+        }), rx)
     }
 }
 
-impl<R: io::Read> Lex<io::CharsError> for Lexer<R> {
+impl<R: io::Read+Send> Lex<io::CharsError> for Lexer<R> {
     fn next(&self)->Result<char, io::CharsError> {
-        try!(self.buf.lock().unwrap().next())
+        self.buf.lock().unwrap().next().unwrap()
     }
 }
+
+static lexer : &'static mut Lexer<BufReader<File>> = &mut Lexer::new(BufReader::new(File::open("src.f").unwrap()));
 
 fn main() {
-    let mut l = Lexer::new(BufReader::new(try!(File::open("src.f"))));
-    println!("{:?}\n", l.recv.lock().unwrap().recv().unwrap());
-
+    let (th, rx) = lexer.lex();
+    println!("{:?}\n", rx.recv().unwrap());
 }
