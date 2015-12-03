@@ -10,9 +10,7 @@ use std::sync::mpsc::{ channel, Sender, Receiver };
 use std::thread;
 
 // State Function
-struct StateFn<E: std::error::Error> {
-    f: fn(l: &Lex<E>)->Option<StateFn<E>>
-}
+struct StateFn<E: std::error::Error>(fn(l: &Lex<E>)->Option<StateFn<E>>);
 
 #[derive(Debug)]
 struct Pos {
@@ -65,9 +63,7 @@ impl<R: io::Read+Send+'static> Lexer<R> {
         Lexer {
             pos: Pos::new(),
             buf: Arc::new(Mutex::new(reader.chars())),
-            state: StateFn {
-                f: start_state
-            },
+            state: StateFn(start_state),
             send: None
         }
     }
@@ -77,7 +73,7 @@ impl<R: io::Read+Send+'static> Lexer<R> {
         self.send = Some(tx);
         (thread::spawn(move || {
             loop {
-                match (self.state.f)(&self) {
+                match (self.state.0)(&self) {
                     Some(s) => { self.state = s; }
                     None => { return }
                 }
