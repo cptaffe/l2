@@ -18,6 +18,7 @@ struct Pos {
     col: u64
 }
 
+// Position
 impl Pos {
     fn new()->Pos {
         Pos {
