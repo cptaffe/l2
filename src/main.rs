@@ -14,7 +14,6 @@ fn start_state<E: std::error::Error>(l: &mut scanner::Scanner<E>)->Option<scanne
 	None
 }
 
-
 fn main() {
 	let lexer = scanner::ReadScanner::new(io::BufReader::new(File::open("src.f").unwrap()), scanner::StateFn(start_state));
 	let rx = lexer.spawn();
