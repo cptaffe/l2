@@ -6,9 +6,13 @@ use std::thread;
 use std::error;
 
 // State Function
-pub struct StateFn<E: error::Error>(pub fn(l: &mut Scanner<E>)->Option<StateFn<E>>);
+pub struct StateFn<E: error::Error, T>(pub fn(l: &mut Scanner<E, T>)->Result<Option<StateFn<E, T>>, E>);
 
-#[derive(Debug)]
+pub trait StateMachine<E: error::Error, T> {
+	fn start_state(self)->Result<Option<StateFn<E, T>>, E>;
+}
+
+#[derive(Clone, Debug)]
 pub struct Pos {
 	pos: u64,
 	line: u64,
@@ -47,26 +51,20 @@ impl Pos {
 }
 
 #[derive(Debug)]
-pub enum TokenType {
-	Integer,
-	Operator
-}
-
-#[derive(Debug)]
-pub struct Token {
+pub struct Token<T> {
 	pos: Pos,
-	typ: TokenType,
+	typ: T,
 	val: String
 }
 
-pub trait Scanner<E: error::Error> {
+pub trait Scanner<E: error::Error, T> {
 	fn next(&mut self)->Result<char, E>;
 	fn back(&mut self);
-	fn emit(&mut self);
+	fn emit(&mut self, typ: T);
 }
 
 // State Machine
-pub struct ReadScanner<R: io::Read+Send> {
+pub struct ReadScanner<R: io::Read+Send, T: Send> {
 	// Current position
 	pos: Pos,
 	// Input character stream
@@ -76,35 +74,38 @@ pub struct ReadScanner<R: io::Read+Send> {
 	// Unemitted buffer
 	buf: String,
 	// State machine position
-	state: StateFn<io::CharsError>,
+	state: StateFn<io::CharsError, T>,
 	// Sending handle to token channel
-	send: Option<Sender<Token>>,
+	send: Option<Sender<Token<T>>>,
 	// Sending state machine thread handle
-	handle: Option<thread::JoinHandle<()>>
+	handle: Option<thread::JoinHandle<Option<io::CharsError>>>
 }
 
-impl<R: io::Read+Send+'static> ReadScanner<R> {
-	pub fn new(reader: R, sstate: StateFn<io::CharsError>)->ReadScanner<R> {
+impl<R: io::Read+Send+'static, T: Send+'static> ReadScanner<R, T> {
+	pub fn new<S: StateMachine<io::CharsError, T>>(reader: R, sstate: S)->ReadScanner<R, T> {
 		let l = ReadScanner {
 			pos: Pos::new(),
 			input: Arc::new(Mutex::new(reader.chars())),
 			buf: String::new(),
 			backbuf: Vec::<char>::new(),
-			state: sstate,
+			state: sstate.start_state().unwrap().unwrap(),
 			send: None,
 			handle: None,
 		};
 		l
 	}
 
-	pub fn spawn(mut self)->Receiver<Token> {
+	pub fn spawn(mut self)->Receiver<Token<T>> {
 		let (tx, rx) = channel();
 		self.send = Some(tx);
 		self.handle = Some(thread::spawn(move || {
 			loop {
 				match (self.state.0)(&mut self) {
-					Some(s) => self.state = s,
-					None => return
+					Ok(s) => match s {
+						Some(s) => self.state = s,
+						None => return None,
+					},
+					Err(e) => return Some(e)
 				}
 			}
 		}));
@@ -112,7 +113,7 @@ impl<R: io::Read+Send+'static> ReadScanner<R> {
 	}
 }
 
-impl<R: io::Read+Send> Scanner<io::CharsError> for ReadScanner<R> {
+impl<R: io::Read+Send, T: Send> Scanner<io::CharsError, T> for ReadScanner<R, T> {
 	fn next(&mut self)->Result<char, io::CharsError> {
 		let c = if self.backbuf.len() == 0 {
 			try!(self.input.lock().unwrap().next().unwrap())
@@ -125,15 +126,15 @@ impl<R: io::Read+Send> Scanner<io::CharsError> for ReadScanner<R> {
 	}
 
 	fn back(&mut self) {
-		let c = self.backbuf.pop().unwrap();
+		let c = self.buf.pop().unwrap();
+		self.backbuf.push(c);
 		self.pos.back(c);
-		self.buf.push(c);
 	}
 
-	fn emit(&mut self) {
+	fn emit(&mut self, typ: T) {
 		let t = self.send.as_ref().unwrap().send(Token{
-			pos: Pos::new(),
-			typ: TokenType::Integer,
+			pos: self.pos.clone(),
+			typ: typ,
 			val: self.buf.clone()
 		}).unwrap();
 		self.buf = String::new();
